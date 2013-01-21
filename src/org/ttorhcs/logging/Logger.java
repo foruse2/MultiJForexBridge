@@ -6,6 +6,7 @@ package org.ttorhcs.logging;
 
 import com.dukascopy.api.IConsole;
 import com.dukascopy.api.IContext;
+import com.dukascopy.api.Period;
 import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileWriter;
@@ -31,7 +32,7 @@ public class Logger {
                 console = context.getConsole();
                 FileWriter fstream;
                 String path = getPath(logFileDir);
-                new LogMaintain(path);
+                new LogMaintain(path, Period.DAILY);
                 String logFile = getPath(path) + "\\"+identity+".log";
                 fstream = new FileWriter(logFile, false);
                 out = new BufferedWriter(fstream);

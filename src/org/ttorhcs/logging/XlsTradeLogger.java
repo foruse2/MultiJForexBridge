@@ -5,6 +5,7 @@
 package org.ttorhcs.logging;
 
 import com.dukascopy.api.IOrder;
+import com.dukascopy.api.Period;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
@@ -50,7 +51,7 @@ public class XlsTradeLogger {
             headerSetted = true;
             return;
         }
-        new LogMaintain(this.folder);
+        new LogMaintain(this.folder, Period.WEEKLY);
         provideXLS(this.folder);
 
     }

@@ -4,6 +4,7 @@
  */
 package org.ttorhcs.logging;
 
+import com.dukascopy.api.Period;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -20,8 +21,12 @@ import java.util.List;
  */
 public class LogMaintain {
 
-    public LogMaintain(String folder) {
+    private long timeInterval = Period.DAILY.getInterval();
 
+    public LogMaintain(String folder, Period intervalToCheck) {
+        if (null != intervalToCheck) {
+            timeInterval = intervalToCheck.getInterval();
+        }
         maintainFolder(folder);
     }
 
@@ -29,11 +34,12 @@ public class LogMaintain {
         if (null == folder || folder.equals("")) {
             return;
         }
+
         File f = new File(folder);
         if (f.isDirectory()) {
             List<File> logFiles = new ArrayList<File>();
             logFiles.addAll(Arrays.asList(f.listFiles()));
-            
+
             //sort logfile to lastModified order
             if (!logFiles.isEmpty()) {
                 Collections.sort(logFiles, new Comparator<File>() {
@@ -47,7 +53,7 @@ public class LogMaintain {
             int i = 0;
             for (File slf : logFiles) {
 
-                if ((i + 10) < logFiles.size() && (slf.lastModified() < System.currentTimeMillis() - 86400000)) {
+                if ((i + 10) < logFiles.size() && (slf.lastModified() < System.currentTimeMillis() - timeInterval)) {
                     try {
                         slf.delete();
                     } catch (Exception e) {

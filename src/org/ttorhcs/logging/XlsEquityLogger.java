@@ -6,6 +6,7 @@ package org.ttorhcs.logging;
 
 import com.dukascopy.api.IContext;
 import com.dukascopy.api.IOrder;
+import com.dukascopy.api.Period;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
@@ -46,7 +47,7 @@ public class XlsEquityLogger {
         this.log = log;
         if (logAllowed) {
             String folder = getPath(fileName);
-            new LogMaintain(folder);
+            new LogMaintain(folder, Period.WEEKLY);
             provideXLS(folder);
             writeHeader();
         }
