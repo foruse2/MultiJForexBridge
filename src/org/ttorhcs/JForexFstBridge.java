@@ -1,4 +1,4 @@
-package main.java.org.ttorhcs;
+package org.ttorhcs;
 
 import com.dukascopy.api.*;
 import com.dukascopy.api.IEngine.OrderCommand;

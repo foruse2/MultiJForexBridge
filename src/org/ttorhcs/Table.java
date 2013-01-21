@@ -4,6 +4,7 @@
  */
 package org.ttorhcs;
 
+import org.ttorhcs.BridgeThread;
 import com.dukascopy.api.Configurable;
 import com.dukascopy.api.IConsole;
 import java.lang.reflect.Field;
