@@ -1,4 +1,4 @@
-package org.ttorhcs;
+package main.java.org.ttorhcs;
 
 import com.dukascopy.api.*;
 import com.dukascopy.api.IEngine.OrderCommand;
@@ -57,6 +57,7 @@ public class JForexFstBridge implements IStrategy {
     public double activatedSL = 0, activatedTP = 0, closedSLTPLots = 0;
     private long now;
     private float accountProfit;
+    private DecimalFormat df = new DecimalFormat("#.00000");
 
     @Override
     public void onStart(IContext context) throws JFException {
@@ -72,7 +73,7 @@ public class JForexFstBridge implements IStrategy {
         //initialize logger
         String logFileDir = context.getFilesDir() + "\\logs";
         log = new Logger(context, loglevel, logFileDir, connId + "");
-
+        
         //subscribe to instrument
         Set<Instrument> instruments = new HashSet<Instrument>();
         instruments.add(instrument);
@@ -153,7 +154,10 @@ public class JForexFstBridge implements IStrategy {
         // tick
         // to FST
         String rtnString = "";
-        DecimalFormat df = new DecimalFormat("#.00000");
+        if (tick.getTime() > (presentBar.getTime()+period.getInterval())){
+            firstTick = true;
+        }
+        
         try {
             rtnString = instrument.name() + " " + periodString + " " + (tick.getTime() / 1000) + " " + tick.getBid() + " " + tick.getAsk() + " "
                     + (Math.round((tick.getAsk() - tick.getBid()) * 100000)) + " " + df.format(instrument.getPipValue() * 10000).replace(',', '.') + " "
@@ -663,6 +667,7 @@ public class JForexFstBridge implements IStrategy {
                         bars = history.getBars(instrument, period, OfferSide.BID, Filter.ALL_FLATS, from, to);
                     }
                     if (null != bars && (bars.size() >= (offsetTo - offsetFrom))) {
+                        log.debug(bars + "");
                         break;
                     }
                     log.info("waiting for bars loading...");
@@ -1313,6 +1318,7 @@ public class JForexFstBridge implements IStrategy {
             for (int i = 0; i < 20 && null == bars; i++) {
                 bars = history.getBars(instrument, period, OfferSide.BID, Filter.ALL_FLATS, from, to);
                 if (null != bars && bars.size() > 12) {
+                    log.debug("lastbar + last10Bar: "+bars);
                     continue;
                 }
                 from -= period.getInterval() * 10;
@@ -1325,6 +1331,8 @@ public class JForexFstBridge implements IStrategy {
             }
             presentBar = bars.get(bars.size() - 1);
             last10BarTime = bars.get(bars.size() - 11).getTime() / 1000;
+            log.debug("presentBar: "+presentBar);
+            log.debug("last10thBatrTime: "+last10BarTime);
         } catch (Exception ex) {
             log.error(ex);
         }
