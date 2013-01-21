@@ -190,6 +190,11 @@ public class JForexFstBridge implements IStrategy {
             rs += presentBar.getClose() + " ";
             rs += "1";
         } else {
+            try {
+                presentBar = history.getBar(instrument, period, OfferSide.BID, 0);
+            } catch (JFException ex) {
+                log.error(ex);
+            }
             rs += (int) (presentBar.getTime() / 1000) + " ";
             rs += presentBar.getOpen() + " ";
             rs += presentBar.getHigh() + " ";
