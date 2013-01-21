@@ -1,38 +1,16 @@
-package com.ttorhcs.multijforexbridge;
+package org.ttorhcs;
 
-import com.dukascopy.api.Configurable;
-import com.dukascopy.api.Filter;
-import com.dukascopy.api.IAccount;
-import com.dukascopy.api.IBar;
-import com.dukascopy.api.IConsole;
-import com.dukascopy.api.IContext;
-import com.dukascopy.api.IDataService;
-import com.dukascopy.api.IEngine;
+import com.dukascopy.api.*;
 import com.dukascopy.api.IEngine.OrderCommand;
-import com.dukascopy.api.IHistory;
-import com.dukascopy.api.IMessage;
-import com.dukascopy.api.IOrder;
-import com.dukascopy.api.IStrategy;
-import com.dukascopy.api.ITick;
-import com.dukascopy.api.Instrument;
-import com.dukascopy.api.JFException;
-import com.dukascopy.api.OfferSide;
-import com.dukascopy.api.Period;
-import com.dukascopy.api.RequiresFullAccess;
 import com.dukascopy.api.system.TesterFactory;
-import java.io.BufferedWriter;
-import java.io.File;
-import java.io.FileNotFoundException;
-import java.io.FileWriter;
-import java.io.IOException;
-import java.io.RandomAccessFile;
+import java.io.*;
 import java.text.DecimalFormat;
-import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.Callable;
+import java.util.logging.Level;
+import org.ttorhcs.logging.LogLevel;
+import org.ttorhcs.logging.Logger;
+import org.ttorhcs.logging.XlsTradeLogger;
 
 @RequiresFullAccess
 public class JForexFstBridge implements IStrategy {
@@ -44,56 +22,77 @@ public class JForexFstBridge implements IStrategy {
     public IContext context;
     public IDataService dataService;
     public int maxTicket = 1000000000, breakEven = 0, trailingStop = 0;
-    public server serverThis;
-    public boolean runServer = true;
+    public Server server;
     public RandomAccessFile clientPipe = null;
-    public String lastTickStr;
+    private IBar presentBar;
+    private long last10BarTime;
+    private String lastTickStr = "";
     @Configurable("Magic")
     public int magic = 10002000;
-    public @Configurable("Period:")
+    public @Configurable("Period")
     Period period = Period.ONE_HOUR;
-    public @Configurable("connection ID:")
+    public @Configurable("Conn ID")
     int connId = 111;
-    public @Configurable("Log")
-    boolean log = false;
-    public @Configurable("Instrument:")
+    public @Configurable("Logging")
+    LogLevel loglevel = LogLevel.INFO;
+    public @Configurable("Instrument")
     Instrument instrument = Instrument.EURUSD;
-    private IOrder position;
-    private IOrder newOrder = null;
-    private String fileName;
-    private boolean firstTick = false;
+    public @Configurable("TradeLog")
+    boolean tradeLog = true;
+    public @Configurable("trade/day")
+    int maxTrade = 3;
     public boolean started = false;
+    private IOrder position = null;
+    private IOrder newOrder = null;
+    private List<IOrder> orderList = new ArrayList<IOrder>();
+    private List<IOrder> maxTradeOrderList = new ArrayList<IOrder>();
+    private String periodString;
+    private boolean firstTick = false;
+    public int waitForFst = 10;
+    private XlsTradeLogger tradeLogger;
+    private Logger log;
+    public int maxLeverage = 30;
+    private double allPositionAmount;
+    public int consecutiveLosses = 0;
+    public double activatedSL = 0, activatedTP = 0, closedSLTPLots = 0;
+    private long now;
+    private float accountProfit;
 
     @Override
     public void onStart(IContext context) throws JFException {
+        started = true;
         this.history = context.getHistory();
         this.engine = context.getEngine();
         this.account = context.getAccount();
         this.dataService = context.getDataService();
         this.console = context.getConsole();
         this.context = context;
-        
+        periodString = ((int) (period.getInterval()) / 60000) + "";
+
+        //initialize logger
+        String logFileDir = context.getFilesDir() + "\\logs";
+        log = new Logger(context, loglevel, logFileDir, connId + "");
+
         //subscribe to instrument
         Set<Instrument> instruments = new HashSet<Instrument>();
         instruments.add(instrument);
         context.setSubscribedInstruments(instruments, true);
-        
-        serverThis = new server();
-        serverThis.instrument = instrument;
-        serverThis.dataService = dataService;
-        serverThis.history = history;
-        serverThis.account = account;
-        serverThis.context = context;
-        position = getLastPosition();
-        serverThis.start();
-        fileName = getPath("logs")+"\\"+(System.currentTimeMillis() / 1000) +"_"+ connId + ".log";
-        started = true;
 
-        log("Started");
+        getHistory();
+
+        //start srvPipe
+        server = new Server();
+
+
+        //initalize tradelogger
+        tradeLogger = new XlsTradeLogger(magic, connId, context.getFilesDir() + "\\tradeLogs", log, tradeLog);
+
+        log.info("Started");
     }
 
     @Override
     public void onTick(Instrument instrument, ITick tick) throws JFException {
+        now = tick.getTime();
         if (!dataService.isOfflineTime(tick.getTime()) && instrument == this.instrument) {
             tickToFST(tick, instrument);
             if (breakEven > 0) {
@@ -101,6 +100,12 @@ public class JForexFstBridge implements IStrategy {
             }
             if (trailingStop > 0) {
                 setTrailingStops(trailingStop, tick);
+            }
+            if (!tradeLogger.headerSetted) {
+                tradeLogger.numberOfTicks++;
+                if (tradeLogger.startTime == 0) {
+                    tradeLogger.startTime = tick.getTime();
+                }
             }
         }
     }
@@ -113,29 +118,27 @@ public class JForexFstBridge implements IStrategy {
      */
     public void tickToFST(ITick tick, Instrument instrument) {
         String rtnString = "TI " + createTick(tick, instrument);
-
+        byte[] lpInBuffer = new byte[4];
         try {
-            if (null == clientPipe) {
-                createClientPipe();
-            }
-            if (null != clientPipe) {
-                log(rtnString);
-                clientPipe.write(rtnString.getBytes());
-                byte[] lpInBuffer = new byte[2];
-                clientPipe.read(lpInBuffer, 0, 2);
+            if (createClientPipe()) {
+                log.debug("CLwrite: " + rtnString);
+                clientPipe.write(rtnString.getBytes("UTF-8"));
+                clientPipe.read(lpInBuffer, 0, 4);
                 String respond = new String(lpInBuffer, "UTF-8");
-                log(respond);
                 clientPipe.close();
                 clientPipe = null;
-                if ("OK".equals(respond.toUpperCase())) {
+                log.debug("CLread: " + respond);
+                if (firstTick) {
+                    firstTick = false;
+                }
+                if (respond.toUpperCase().startsWith("OK")) {
                 } else {
-                    log("error in Tick send: \n" + rtnString + "\n respond: " + respond);
+                    log.error("error in Tick send: \n" + rtnString + "\n respond: " + respond);
                 }
             }
-        } catch (IOException e) {
-            log("cannot communicate with FST pipe");
+        } catch (Exception e) {
+            log.debug("cannot communicate with FST pipe");
             clientPipe = null;
-
         }
     }
 
@@ -146,89 +149,122 @@ public class JForexFstBridge implements IStrategy {
      * @param instrument
      * @return
      */
-    public String createTick(ITick tick, Instrument instrument) { // sends a
+    public String createTick(ITick tick, Instrument instrument) { // sends allow
         // tick
         // to FST
         String rtnString = "";
         DecimalFormat df = new DecimalFormat("#.00000");
         try {
-            rtnString = instrument.name() + " " + period.getInterval() / 60000 + " " + (tick.getTime() / 1000) + " " + tick.getBid() + " " + tick.getAsk() + " "
+            rtnString = instrument.name() + " " + periodString + " " + (tick.getTime() / 1000) + " " + tick.getBid() + " " + tick.getAsk() + " "
                     + (Math.round((tick.getAsk() - tick.getBid()) * 100000)) + " " + df.format(instrument.getPipValue() * 10000).replace(',', '.') + " "
-                    + barToStrForTick(history.getBar(instrument, period, OfferSide.ASK, 0)) + " "
-                    + history.getBars(instrument, period, OfferSide.ASK, Filter.WEEKENDS, 12, history.getStartTimeOfCurrentBar(instrument, period), 0).get(1).getTime() / 1000
-                    + " " + account.getBalance() + " " + account.getEquity() + " " + (float) Math.round((account.getEquity() - account.getBalance()) * 100) / 100 + " "
-                    + (float) Math.round((account.getEquity() - (account.getEquity() * account.getUseOfLeverage())) * 100) / 100 // accountfreemargin
-                    + " " + getPositionDetails();
-        } catch (JFException e) {
+                    + barToStrForTick() + " " + last10BarTime + " "
+                    + account.getBalance() + " " + account.getEquity() + " " + accountProfit + " "
+                    + (float) Math.round((account.getEquity() - (account.getEquity() * account.getUseOfLeverage())) * 100) / 100 + " " // accountfreemargin
+                    + getPositionDetails();
+        } catch (Exception e) {
             rtnString = "ER";
-            log(e);
+            log.error(e);
         }
         lastTickStr = rtnString;
         return rtnString;
     }
 
     /**
-     * creates client pipe from connId and loggen in user if pipe not exists
-     * then wait for it
+     *
+     * @param bar
+     * @return bar data in string format and if it is allow first tick in
+     * period/bar the volume = 0
+     */
+    public String barToStrForTick() {
+        String rs = "";
+        if (firstTick) {
+            getCurrentBar();
+            rs += (int) (presentBar.getTime() / 1000) + " ";
+            rs = rs + presentBar.getOpen() + " ";
+            rs = rs + presentBar.getHigh() + " ";
+            rs = rs + presentBar.getLow() + " ";
+            rs += presentBar.getClose() + " ";
+            rs += "1";
+        } else {
+            rs += (int) (presentBar.getTime() / 1000) + " ";
+            rs += presentBar.getOpen() + " ";
+            rs += presentBar.getHigh() + " ";
+            rs += presentBar.getLow() + " ";
+            rs += presentBar.getClose() + " ";
+            rs += Math.round(presentBar.getVolume() * 10) / 10;
+        }
+        return rs;
+    }
+
+    /**
+     * creates client pipe if pipe not exists then wait for it
      *
      * @return
      */
     public boolean createClientPipe() {
-        clientPipe = null;
-        int tryes = 1;
-        while (tryes < 5 && null == clientPipe) {
-            try {
-                clientPipe = new RandomAccessFile("\\\\.\\pipe\\MT4-FST_" + System.getProperty("user.name") + "-" + connId, "rw");
-            } catch (FileNotFoundException e) {
-                // log(e);
-                log("waiting for Fst pipe..");
+
+        int tryes = 0;
+        try {
+            while (tryes < 10) {
                 try {
+                    clientPipe = new RandomAccessFile("\\\\.\\pipe\\MT4-FST_" + System.getProperty("user.name") + "-" + connId, "rw");
+                    break;
+                } catch (SecurityException ex) {
+                    log.error("there is a security issue when connecting FST server...");
+                    log.error(ex);
+                } catch (FileNotFoundException e) {
+                    log.debug("waiting for Fst pipe...");
+                    Thread.sleep(waitForFst);
                     clientPipe = null;
-                    Thread.sleep(50);
                     tryes++;
-                } catch (InterruptedException ex) {
-                    return false;
-                }
-                if (tryes > 20) {
-                    return false;
                 }
             }
+            Thread.sleep(waitForFst);
+        } catch (InterruptedException e) {
         }
-        return true;
+
+        if (tryes < 10) {
+            return true;
+        }
+        return false;
     }
 
     @Override
     public void onMessage(IMessage message) throws JFException {
 
-        System.out.println(message.getContent());
         if (message.getType() == IMessage.Type.ORDER_FILL_OK) {
-            System.out.println("order filled: " + message.getContent());
-            position = getLastPosition();
-            newOrder = position;
-
+            IOrder order = message.getOrder();
+            if (checkLabel(order)) {
+                getPositions();
+                log.info(message.getContent() + ": " + order.getLabel() + " " + (order.isLong() ? "Long " : "Short ") + "amount: " + (order.getAmount() * 10));
+                newOrder = position;
+                addToMaxTradeOL(order);
+            }
         }
         if (message.getType() == IMessage.Type.ORDER_CLOSE_OK) {
             IOrder closedOrder = message.getOrder();
-            log("closed order: " + closedOrder.getLabel());
-            if (message.getReasons().contains(IMessage.Reason.ORDER_CLOSED_BY_SL)) {
-                serverThis.consecutiveLosses++;
-                serverThis.closedSLTPLots = closedOrder.getAmount() * 10;
-                serverThis.activatedSL = closedOrder.getClosePrice();
-            } else if (message.getReasons().contains(IMessage.Reason.ORDER_CLOSED_BY_TP)) {
-                serverThis.activatedTP++;
-                serverThis.consecutiveLosses = 0;
-                serverThis.closedSLTPLots = closedOrder.getAmount() * 10;
-                serverThis.activatedTP = closedOrder.getClosePrice();
-            } else {
-                if (closedOrder.getProfitLossInUSD() > 0) {
-                    serverThis.consecutiveLosses = 0;
+            if (checkLabel(closedOrder)) {
+                getPositions();
+                tradeLogger.logTrade(closedOrder);
+                log.info("closed order: " + closedOrder.getLabel());
+                if (message.getReasons().contains(IMessage.Reason.ORDER_CLOSED_BY_SL)) {
+                    consecutiveLosses++;
+                    closedSLTPLots = closedOrder.getAmount() * 10;
+                    activatedSL = closedOrder.getClosePrice();
+                } else if (message.getReasons().contains(IMessage.Reason.ORDER_CLOSED_BY_TP)) {
+                    activatedTP++;
+                    consecutiveLosses = 0;
+                    closedSLTPLots = closedOrder.getAmount() * 10;
+                    activatedTP = closedOrder.getClosePrice();
                 } else {
-                    serverThis.consecutiveLosses++;
+                    if (closedOrder.getProfitLossInUSD() > 0) {
+                        consecutiveLosses = 0;
+                    } else {
+                        consecutiveLosses++;
+                    }
                 }
             }
-
         }
-
     }
 
     @Override
@@ -237,35 +273,38 @@ public class JForexFstBridge implements IStrategy {
 
     @Override
     public void onStop() throws JFException {
-        runServer = false;
         try {
-            if (clientPipe != null){
-                clientPipe.writeUTF("STOPPED");
-            }
-            Thread.sleep(500);
-            if (serverThis.isAlive()) {
-                try {
-                    RandomAccessFile stopPipe = new RandomAccessFile("\\\\.\\pipe\\FST-MT4_" + System.getProperty("user.name") + "-" + connId, "rw");
-                    stopPipe.writeUTF("ST");
-                    byte[] lpInBuffer = new byte[7];
-                    stopPipe.read(lpInBuffer, 0, 7);
-                    String respond = new String(lpInBuffer, "UTF-8");
-                    log("OK! server: "+respond);
+            started = false;
+            server.srvPipe.disconnect();
 
-                } catch (Exception ex) {
-                    log(ex);
-                }
+            Thread.sleep(50);
+            if (server.isAlive()) {
+                log.error("server cannot be dismissed: destroyed.");
+                server.stop();
             }
+            log.info("bridge stopped");
+            tradeLogger.close();
+            log.close();
+            log = null;
         } catch (Exception ex) {
-            log(ex);
+            log.error(ex);
         }
-        started = false;
     }
 
     @Override
     public void onBar(Instrument instrument, Period period, IBar askBar, IBar bidBar) throws JFException {
-        if (instrument == this.instrument && period == this.period) {
-            firstTick = true;
+        if (instrument == this.instrument) {
+            if (period == this.period) {
+                firstTick = true;
+                setAccountProfit();
+            }
+            if (!tradeLogger.headerSetted) {
+                if (tradeLogger.numberOfTicks >= 500) {
+                    tradeLogger.endTime = history.getLastTick(instrument).getTime();
+                    tradeLogger.writeHeader(instrument.name());
+                    log.info("tradeLogger header created");
+                }
+            }
         }
     }
 
@@ -278,7 +317,7 @@ public class JForexFstBridge implements IStrategy {
     public void setTrailingStops(int trailingStop, ITick tick) {
         try {
             double stoplossPrice;
-            for (IOrder order : getPositions()) {
+            for (IOrder order : orderList) {
                 if (order.isLong()) {
                     if (order.getStopLossPrice() == 0) {
                         stoplossPrice = order.getOpenPrice() - (order.getInstrument().getPipValue() * (trailingStop / 10));
@@ -304,7 +343,7 @@ public class JForexFstBridge implements IStrategy {
                 }
             }
         } catch (JFException ex) {
-            log(ex);
+            log.error(ex);
         }
     }
 
@@ -318,7 +357,7 @@ public class JForexFstBridge implements IStrategy {
         try {
             double breakevenprice;
             int newBreakeven = 0;
-            for (IOrder order : getPositions()) {
+            for (IOrder order : orderList) {
                 if (order.isLong()) {
                     if (order.getOpenPrice() > order.getStopLossPrice()) {
                         breakevenprice = order.getOpenPrice() - (order.getInstrument().getPipValue() * ((breakeven / 10) + 2));
@@ -343,57 +382,97 @@ public class JForexFstBridge implements IStrategy {
             }
             breakEven = newBreakeven;
         } catch (JFException ex) {
-            log(ex);
+            log.error(ex);
         }
     }
-/**
- * returns correct path in strategies/files folder and if it not exists, create it 
- * @param folder
- * @return 
- */
-    private String getPath(String folder) {
-        File direcory = new File(context.getFilesDir()+"\\"+folder);
-        if(!direcory.exists()){
-            direcory.mkdir();
-        }
-        return direcory.getAbsolutePath();
+
+    /*
+     * 
+     * sor given orderlis by fill time ascending
+     */
+    private void sortOrderListByFillTime(List<IOrder> ol) {
+        //sorting by fill time
+        Collections.sort(ol, new Comparator<IOrder>() {
+            @Override
+            public int compare(IOrder o1, IOrder o2) {
+                return Long.signum(o1.getFillTime() - o2.getFillTime());
+            }
+        });
     }
 
-    public class server extends Thread {
+    private void addToMaxTradeOL(IOrder o) {
 
-        public int consecutiveLosses = 0;
-        public double activatedSL = 0, activatedTP = 0, closedSLTPLots = 0;
-        private String msg;
-        private java.util.List<IBar> bars;
-        private boolean run = true;
-        public Instrument instrument;
-        public IHistory history;
-        public IDataService dataService;
-        public IAccount account;
-        public IContext context;
+        if (null != o) {
+            for (IOrder mo : maxTradeOrderList) {
+                if (o.getId().equals(mo.getId())) {
+                    return;
+                }
+            }
+            maxTradeOrderList.add(o);
+        }
+    }
+
+    private float setAccountProfit() {
+        accountProfit = 0;
+        try {
+            for (IOrder o : engine.getOrders()) {
+                accountProfit += o.getProfitLossInAccountCurrency();
+            }
+        } catch (JFException ex) {
+            java.util.logging.Logger.getLogger(JForexFstBridge.class.getName()).log(Level.SEVERE, null, ex);
+        }
+
+        return accountProfit;
+    }
+
+    public class Server extends Thread {
+
+        String msg;
+        pipeServer srvPipe;
+
+        Server() {
+            this.start();
+        }
 
         @Override
         public void run() {
             String reply = "";
-            fstBars(1, 20);
-            pipeServer server = new pipeServer(connId);
-            server.connect();
-            while (run) {
+            srvPipe = new pipeServer(connId, log);
+            while (started) {
                 try {
-                    server.connect();
-                    msg = server.read().trim();
-                    log("read: " + msg.trim());
+                    srvPipe.connect();
+                    msg = srvPipe.read().trim();
+                    log.debug("SRVread: " + msg.trim());
                     reply = processMessage(msg);
-                    log("write: " + reply.substring(0, (reply.length() > 200 ? 200 : reply.length())));
-                    server.write(reply);
-                    server.disconnect();
-                    Thread.sleep(10);
-                    this.run = runServer;
+                    srvPipe.write(reply);
+                    srvPipe.disconnect();
+                    log.debug("SRVwrite: " + reply.substring(0, (reply.length() > 400 ? 400 : reply.length())));
+                    Thread.sleep(5);
                 } catch (Exception e) {
-                    server.disconnect();
-                    log(e);
+                    if (srvPipe.connected) {
+                        log.error(e);
+                    }
                 }
             }
+            if (!srvPipe.connected) {
+                srvPipe.closePipe();
+            }
+            srvPipe = null;
+            log.info("Server Stopped");
+        }
+
+        /**
+         * extract command from FST command
+         *
+         * @param message
+         * @return
+         */
+        private String extractOrder(String message) {
+            if (null == message || message.equals("") || message.length() < 2) {
+                log.debug("malformed message: " + message);
+                return "ER";
+            }
+            return message.substring(0, 2).toUpperCase();
         }
 
         /**
@@ -406,9 +485,6 @@ public class JForexFstBridge implements IStrategy {
         private String processMessage(String msg2) throws JFException {
             String cmd = extractOrder(msg2);
 
-            if (cmd.equals("ST")) {
-                return ("STOPPED");
-            }
             if (cmd.equals("PI")) {
                 // System.out.println("ping respond");
                 return fstPing();
@@ -432,40 +508,30 @@ public class JForexFstBridge implements IStrategy {
                 return fstOrderClose(lotsToClose);
             } else if (cmd.equals("OM")) {
                 return fstOrderModify();
+            } else if (cmd.equals("ST")) {
+                return "Stopping server....";
             }
             return "ER";
         }
 
         /**
-         * extract command from FST command
+         * creates ping iformation if time is non trading time, and it returns
+         * last tick information
          *
-         * @param msg2
-         * @return
-         */
-        private String extractOrder(String msg2) {
-            String cmd = "";
-            cmd = msg2.substring(0, 2).toUpperCase();
-
-            return cmd;
-        }
-
-        /**
-         * creates ping iformation if time is non trading time it returns last
-         * tick information
-         *
-         * @return
+         * @return ping in string format
          */
         private String fstPing() {
             try {
                 String response = "";
-                ITick tick = history.getLastTick(instrument);
-                if (!dataService.isOfflineTime(tick.getTime())) {
+                if (!lastTickStr.equals("")) {
+                    return "OK " + lastTickStr;
+                } else {
+                    ITick tick = history.getLastTick(instrument);
                     DecimalFormat df = new DecimalFormat("#.00000");
-                    response += "OK "
-                            + instrument.name()
+                    response += instrument.name()
                             + " "
                             + // symbol
-                            (period.getInterval() / 1000 / 60)
+                            periodString
                             + " "
                             + // period
                             (tick.getTime() / 1000)
@@ -483,23 +549,18 @@ public class JForexFstBridge implements IStrategy {
                             df.format(instrument.getPipValue() * 10000).replace(',', '.')
                             + " "
                             + // tickValue
-                            barToStr(history.getBar(instrument, period, OfferSide.ASK, 0))
-                            + " "
-                            + // openTime, open, high, low, close, volume
-                            (history.getBars(instrument, period, OfferSide.ASK, Filter.WEEKENDS, 12, history.getStartTimeOfCurrentBar(instrument, period), 0).get(1).getTime() / 1000)
-                            + " " + // bartime10
+                            barToStr(presentBar) + " " + // openTime, open, high, low, close, volume
+                            last10BarTime + " " + // bartime10
                             account.getBalance() + " " + // accountbalance
                             account.getEquity() + " " + // accountequity
-                            (float) Math.round((account.getEquity() - account.getBalance()) * 100) / 100 + " " + // accountprofit
+                            accountProfit + " " + // accountprofit
                             (float) Math.round((account.getEquity() - (account.getEquity() * account.getUseOfLeverage())) * 100) / 100 + " " + // accountfreemargin
                             getPositionDetails(); // position details
-                } else {
-                    response = "OK " + lastTickStr;
                 }
-                return response;
-            } catch (JFException e) {
-                log(e);
-                return "ERR cannot get Ping details";
+                return "OK " + response;
+            } catch (Exception e) {
+                log.error(e);
+                return "ER cannot get Ping details";
             }
         }
 
@@ -543,7 +604,7 @@ public class JForexFstBridge implements IStrategy {
                         df.format(tick.getAsk() * 1000).replace(',', '.') + " " + // marginRequired
                         "0.00000"; // freezeLevel
             } catch (Exception e) {
-                log(e);
+                log.error(e);
                 return "ER";
             }
             return response;
@@ -576,20 +637,37 @@ public class JForexFstBridge implements IStrategy {
          *
          * @param offsetFrom
          * @param offsetTo
-         * @return bars in String format from a given offset
+         * @return bars in String format from allow given offset
          */
         private String fstBars(int offsetFrom, int offsetTo) {
-            String result = "OK " + instrument.name() + " " + (int) (period.getInterval() / 1000 / 60) + " 2000 " + offsetFrom + " ";
+            java.util.List<IBar> bars = null;
+            String result = "OK " + instrument.name() + " " + periodString + " 2000 " + offsetFrom + " ";
             try {
-                IBar barTo = history.getBar(instrument, period, OfferSide.ASK, 0);
-                if (offsetFrom == 1) {
-                    bars = history.getBars(instrument, period, OfferSide.ASK, Filter.WEEKENDS, offsetTo + 10, barTo.getTime(), 0);
+                long to = history.getBarStart(period, history.getTimeOfLastTick(instrument));
+                long from = to - (period.getInterval() * (offsetTo*2));
+                boolean offline = false;
+                for (int i = 0; i<500 ; i++) {
+                    offline = dataService.isOfflineTime(from);
+                    if (offline) {
+                        from -= period.getInterval()*10; 
+                    }
+                    else{
+                        break;
+                    }
                 }
-                if (offsetTo + 10 > bars.size()) {
-                    bars = history.getBars(instrument, period, OfferSide.ASK, Filter.WEEKENDS, offsetTo + 10, barTo.getTime(), 0);
-                }
-                if (bars.get(bars.size() - 1).getVolume() == 0) {
-                    bars.remove(bars.size() - 1);
+                log.debug("time from: " + new Date(from));
+                log.debug("time to :" + new Date(to));
+                for (int i = 0; i < 20 && null == bars; i++) {
+                    if (offsetFrom == 1) {
+                        //bars = history.getBars(instrument, period, OfferSide.ASK, Filter.ALL_FLATS, offsetTo + 10, to, 0);
+                        bars = history.getBars(instrument, period, OfferSide.BID, Filter.ALL_FLATS, from, to);
+                    }
+                    if (null != bars && (bars.size() >= (offsetTo - offsetFrom))) {
+                        break;
+                    }
+                    log.info("waiting for bars loading...");
+                    log.debug(bars + "");
+                    Thread.sleep(1000);
                 }
                 IBar ibar;
                 int totalBars = (bars.size() - 1) - offsetFrom;
@@ -605,7 +683,8 @@ public class JForexFstBridge implements IStrategy {
                 }
                 result += (returnBars) + "" + barsString;
             } catch (Exception e) {
-                log(e);
+                log.error("cannot load bars");
+                log.error(e);
             }
             return result;
         }
@@ -615,7 +694,7 @@ public class JForexFstBridge implements IStrategy {
          * @return next unique label for new orders
          */
         private String getNextLabel() {
-            return "S" + magic + "_" + (maxTicket);
+            return "S" + magic + "_" + (maxTicket + 1);
         }
 
         /**
@@ -624,8 +703,13 @@ public class JForexFstBridge implements IStrategy {
          * @return
          */
         private String fstOrderSend() {
+
+            if (isOfflineTime()) {
+                return "OK 0";
+            }
+
             try {
-                double stoplossprice = 0, takeprofitPrice = 0;
+                double stoplossprice = 0, takeprofitPrice = 0, realAmount = 0;
                 OrderCommand direction;
                 // OS EURUSD 1 1 1.27206 21 0 0 0 0 TS1=0;BRE=0
                 String[] order = msg.split(" ");
@@ -638,9 +722,10 @@ public class JForexFstBridge implements IStrategy {
                 }
                 int takeprofit = Integer.parseInt(order[7]);
                 String label = getNextLabel();
-                String comment = "cl=" + consecutiveLosses + ";aSL=" + activatedSL + ";aTP=" + activatedTP + ";al=" + closedSLTPLots;
+                String comment = consecutiveLosses + ";" + activatedSL + ";" + activatedTP + ";" + closedSLTPLots;
                 if (Integer.parseInt(order[2]) == 0) {
                     direction = OrderCommand.BUY;
+                    realAmount = amount;
                     if (price == 0) {
                         price = history.getLastTick(instrument).getAsk();
                     }
@@ -652,6 +737,7 @@ public class JForexFstBridge implements IStrategy {
                     }
                 } else {
                     direction = OrderCommand.SELL;
+                    realAmount = -amount;
                     if (price == 0) {
                         price = history.getLastTick(instrument).getBid();
                     }
@@ -662,47 +748,55 @@ public class JForexFstBridge implements IStrategy {
                         takeprofitPrice = price - ((takeprofit / 10) * instrument.getPipValue());
                     }
                 }
-                setTrailingStop(Integer.parseInt(order[10].split(";")[0].split("=")[1]));
-                setBreakEven(Integer.parseInt(order[10].split(";")[1].split("=")[1]));
-                if (null != position) { // there is a position
-                    if (direction.isLong() == position.isLong()) {
+
+                if (checkUsedLeverage(realAmount) && checkMaxTrade()) {
+                    log.info("trading allowed");
+
+                    setTrailingStop(Integer.parseInt(order[10].split(";")[0].split("=")[1]));
+                    setBreakEven(Integer.parseInt(order[10].split(";")[1].split("=")[1]));
+                    if (null != position) { // there is allow position
+                        if (direction.isLong() == position.isLong()) {
+                            OrderTask task = new OrderTask(label, instrument, direction, amount, stoplossprice, takeprofitPrice, comment);
+                            context.executeTask(task);
+                        } else {
+                            return fstOrderClose(amount * 10);
+                        }
+                    } else {
                         OrderTask task = new OrderTask(label, instrument, direction, amount, stoplossprice, takeprofitPrice, comment);
                         context.executeTask(task);
-                    } else {
-                        return fstOrderClose(amount * 10);
+                    }
+                    int waitFor = 1;
+                    while (newOrder == null && waitFor < 100) {
+                        try {
+                            if (newOrder == null) {
+                                for (IOrder o : engine.getOrders()) {
+                                    if (o.getLabel().equals(label)) {
+                                        o = newOrder;
+                                        break;
+                                    }
+                                }
+                                wait(50);
+                                waitFor++;
+                            }
+                        } catch (Exception e) {
+                            // newOrder = position;
+                        }
+                    }
+                    if (newOrder != null) {
+                        if (newOrder.getState() == com.dukascopy.api.IOrder.State.FILLED) {
+                            newOrder = null;
+                            return "OK " + maxTicket;
+                        }
                     }
                 } else {
-                    OrderTask task = new OrderTask(label, instrument, direction, amount, stoplossprice, takeprofitPrice, comment);
-                    context.executeTask(task);
-                }
-                int waitFor = 1;
-                while (newOrder == null && waitFor < 100) {
-                    try {
-                        if (newOrder == null) {
-                            for (IOrder o : engine.getOrders()) {
-                                if (o.getLabel().equals(label)) {
-                                    o = newOrder;
-                                    break;
-                                }
-                            }
-                            wait(50);
-                            waitFor++;
-                        }
-                    } catch (Exception e) {
-                        // newOrder = position;
-                    }
-                }
-                if (newOrder != null) {
-                    if (newOrder.getState() == com.dukascopy.api.IOrder.State.FILLED) {
-                        newOrder = null;
-                        return "OK " + maxTicket;
-                    }
+                    return "OK 00000000";
                 }
             } catch (Exception e) {
                 // console.getOut().print(e.getMessage());
-                log(e);
+                log.error(e);
             }
             return "ER";
+
         }
 
         private void setBreakEven(int brEvPips) {
@@ -722,43 +816,48 @@ public class JForexFstBridge implements IStrategy {
         }
 
         /**
-         * closes orders opened by this strategies lasts as long as the amount of
+         * closes orders opened by this strategies lasts as long as the amount
+         * of
+         *
          * @param lotsToClose desired closing amount
          * @return
          */
         private String fstOrderClose(double lotsToClose) {
-            IOrder order = null;
-            log("close: " + lotsToClose);
-            try {
-                order = getFirstPosition();
-                int tryes = 0;
-                while (lotsToClose > (double) 0.001 && null != order && tryes < 20) {
-                    if ((order.getAmount() * 10) <= lotsToClose) {
-                        log("trying to close: " + order.getLabel());
-                        lotsToClose -= order.getAmount() * 10;
-                        closeTask closetask = new closeTask(order, order.getAmount());
-                        context.executeTask(closetask);
-                        log("closed: " + tryes + " remaining lots: " + lotsToClose);
-                    } else {
-                        log("trying to close: " + order.getLabel());
-                        closeTask closetask = new closeTask(order, lotsToClose / 10);
-                        context.executeTask(closetask);
 
+            if (isOfflineTime()) {
+                return "OK 0";
+            }
+
+            log.info("close: " + lotsToClose);
+            try {
+                int tryes = 0;
+                for (IOrder o : orderList) {
+                    if ((o.getAmount() * 10) <= lotsToClose) {
+                        log.debug("trying to close: " + o.getLabel());
+                        lotsToClose -= o.getAmount() * 10;
+                        closeTask closetask = new closeTask(o, o.getAmount());
+                        context.executeTask(closetask);
+                        log.info("closed: " + tryes + " remaining lots: " + lotsToClose);
+                    } else {
+                        log.debug("trying to close: " + o.getLabel());
+                        closeTask closetask = new closeTask(o, lotsToClose / 10);
+                        context.executeTask(closetask);
                         lotsToClose = 0;
-                        log("closed: " + tryes);
+                        log.info("closed: " + tryes);
+                    }
+                    if (lotsToClose == 0) {
                         break;
                     }
                     Thread.sleep(10);
                     tryes++;
-                    order = getNextPosition(order);
                 }
             } catch (Exception e) {
-                log(e);
+                log.error(e);
                 return "ER";
             }
             return "OK 0";
         }
-        
+
         private void parseOrderParameters(String parameters) {
             int brEven = Integer.parseInt(parameters.split(";")[1].substring(4));
             int trStop = Integer.parseInt(parameters.split(";")[0].substring(4));
@@ -777,6 +876,11 @@ public class JForexFstBridge implements IStrategy {
          * @return order
          */
         private String fstOrderModify() {
+
+            if (isOfflineTime()) {
+                return "OK 0";
+            }
+
             String[] msgArray = msg.split(" ");
             parseOrderParameters(msgArray[6]);
             double price = Double.parseDouble(msgArray[2]);
@@ -787,9 +891,8 @@ public class JForexFstBridge implements IStrategy {
             int takeprofit = Integer.parseInt(msgArray[4]);
             double stoplossprice = 0, takeprofitPrice = 0;
             OfferSide offSide;
-            IOrder order = getFirstPosition();
 
-            if (order.isLong()) {
+            if (position.isLong()) {
                 if (stoploss > 0) {
                     stoplossprice = price - ((double) (stoploss / 10) * instrument.getPipValue());
                 }
@@ -806,11 +909,11 @@ public class JForexFstBridge implements IStrategy {
                 }
                 offSide = OfferSide.BID;
             }
-            for (IOrder iOrder : getPositions()) {
-                if (order.isLong() != iOrder.isLong()) {
+            for (IOrder iOrder : orderList) {
+                if (position.isLong() != iOrder.isLong()) {
                     closeTask closetask = new closeTask(iOrder, iOrder.getAmount());
                     context.executeTask(closetask);
-                    log("positions in different directions!: " + magic);
+                    log.info("positions in different directions!: " + magic);
                     continue;
                 }
                 if (iOrder.getStopLossPrice() != stoplossprice) {
@@ -832,18 +935,14 @@ public class JForexFstBridge implements IStrategy {
          */
         private double getLongOvernight(Instrument instrument) {
             try {
-                Map<Instrument, Double> map = TesterFactory.getDefaultInstance().getOvernights().getLongOvernights();
+                Map<Instrument, Double> map = TesterFactory.getDefaultInstance().getOvernights().longValues;
                 for (Instrument key : map.keySet()) {
                     if (key == instrument) {
                         return map.get(key);
                     }
                 }
-            } catch (ClassNotFoundException e) {
-                log(e);
-            } catch (IllegalAccessException e) {
-                log(e);
-            } catch (InstantiationException e) {
-                log(e);
+            } catch (Exception e) {
+                log.error(e);
             }
             return 0;
         }
@@ -855,39 +954,73 @@ public class JForexFstBridge implements IStrategy {
          */
         private double getShortOvernight(Instrument instrument) {
             try {
-                Map<Instrument, Double> map = TesterFactory.getDefaultInstance().getOvernights().getShortOvernights();
+                Map<Instrument, Double> map = TesterFactory.getDefaultInstance().getOvernights().shortValues;
                 for (Instrument key : map.keySet()) {
                     if (key == instrument) {
                         return map.get(key);
                     }
                 }
             } catch (Exception e) {
-                log(e);
+                log.error(e);
             }
             return 0;
         }
 
-        /**
-         * return proper format of martingale details to FST
-         *
-         * @return
-         */
-        public synchronized String getMartingaleDetails() {
-            DecimalFormat df = new DecimalFormat("0.00000");
-            return " cl=" + consecutiveLosses + ";aSL=" + df.format(activatedSL).replace(',', '.') + ";aTP=" + df.format(activatedTP).replace(',', '.') + ";al="
-                    + df.format(closedSLTPLots).replace(',', '.');
-        }
-
-        public synchronized void setMartingaleDetails(int consLosses, double actSl, double actTp, double clSLTPLots) {
-            consecutiveLosses = consLosses;
-            activatedSL = actSl;
-            activatedTP = actTp;
-            closedSLTPLots = clSLTPLots;
-        }
-
         /*
-         * private void print(Object o){ log(o); }
+         * private void print(Object o){ debugLog(o); }
          */
+        private boolean checkUsedLeverage(double amount) {
+            int existingDirection = 1;
+            if (null != position) {
+                existingDirection = position.isLong() ? 1 : -1;
+            }
+
+            double currentLeverageUsed = account.getUseOfLeverage() * existingDirection;
+            log.debug("current leverage: " + currentLeverageUsed + "");
+            double bal = account.getBalance();
+            double nl = (currentLeverageUsed + ((Math.abs(amount) * 1000000) / bal));
+            log.debug("new leverage: " + nl);
+            boolean allow = Math.abs((int) nl) < maxLeverage;
+            log.debug("leverageLimit opening allowed: " + allow);
+            if (!allow) {
+                log.info("position opening denied by Leverage Limiter!");
+            }
+            return allow;
+        }
+
+        private boolean checkMaxTrade() {
+            boolean allow = false;
+            for (int i = 0; i < maxTradeOrderList.size(); i++) {
+                IOrder o = maxTradeOrderList.get(i);
+                if (now - (Period.DAILY.getInterval()) > o.getFillTime()) {
+                    maxTradeOrderList.remove(i);
+                }
+                log.debug("maxTradeOrderList : " + o);
+            }
+            sortOrderListByFillTime(maxTradeOrderList);
+            if (maxTradeOrderList.size() < maxTrade) {
+                allow = true;
+            }
+            log.debug("orders count by last day: " + maxTradeOrderList.size() + " trading allowed: " + allow);
+            if (!allow) {
+                log.info("position opening denied by MaxTradePerDay Limiter!");
+            }
+            return allow;
+        }
+
+        private boolean isOfflineTime() {
+            boolean offLineTime = true;
+            try {
+                offLineTime = dataService.isOfflineTime(history.getTimeOfLastTick(instrument));
+                log.debug("offlineTime: " + offLineTime);
+            } catch (JFException ex) {
+                log.error(ex);
+            }
+            if (offLineTime) {
+                log.info("at this time trading is not allowed...");
+            }
+            return offLineTime;
+        }
     }
 
     /**
@@ -919,7 +1052,7 @@ public class JForexFstBridge implements IStrategy {
                 // return engine.submitOrder("test123", Instrument.EURUSD ,
                 // OrderCommand.BUY, 0.1 , 0, 5, 0,0);
             } catch (Exception e) {
-                log(e);
+                log.error(e);
                 return null;
             }
         }
@@ -940,7 +1073,11 @@ public class JForexFstBridge implements IStrategy {
 
         @Override
         public IOrder call() throws Exception {
-            order.close(amount);
+            if (amount == order.getAmount()) {
+                order.close();
+            } else {
+                order.close(amount);
+            }
             return order;
         }
     }
@@ -1004,89 +1141,101 @@ public class JForexFstBridge implements IStrategy {
     }
 
     /**
-     *
-     * @param bar
-     * @return bar data in string format and if it is a first tick in period/bar
-     * the volume = 0
-     */
-    public String barToStrForTick(IBar bar) {
-        String rs = "";
-        rs += (int) (bar.getTime() / 1000) + " ";
-        rs = rs + bar.getOpen() + " ";
-        rs = rs + bar.getHigh() + " ";
-        rs = rs + bar.getLow() + " ";
-        rs += bar.getClose() + " ";
-        if (firstTick) {
-            rs += "1";
-            firstTick = false;
-        } else {
-            rs += Math.round(bar.getVolume() * 10) / 10;
-        }
-        return rs;
-    }
-
-    /**
      * searches all filled orders opened by this strategy
      */
     private void getHistory() {
-        IOrder order = null;
-        long lastFillTime = 0;
-        int consecutiveLosses = 0;
-        double activatedSL = 0, activatedTP = 0, closedSLTPLots = 0;
+        getPositions();
+        getCurrentBar();
+        IOrder lastOrder = position;
         try {
-            for (IOrder o : engine.getOrders()) {
-                if (checkLabel(o) && o.getFillTime() > lastFillTime) {
-                    order = o;
-                }
-                if (order != null) {
-                    maxTicket = getOrderTicket(order);
-                    consecutiveLosses = Integer.parseInt(order.getComment().split(";")[0].substring(3));
-                    activatedSL = Double.parseDouble(order.getComment().split(";")[1].substring(4));
-                    activatedTP = Double.parseDouble(order.getComment().split(";")[2].substring(4));
-                    closedSLTPLots = Double.parseDouble(order.getComment().split(";")[3].substring(3));
-                    serverThis.setMartingaleDetails(consecutiveLosses, activatedSL, activatedTP, closedSLTPLots);
+            now = history.getTimeOfLastTick(instrument);
+            log.debug("getting order history...");
+            List<IOrder> allHistory = history.getOrdersHistory(instrument, now - (Period.WEEKLY.getInterval()), now);
+            for (IOrder o : allHistory) {
+                if (checkLabel(o) && o.getState() == IOrder.State.CLOSED) {
+                    if (o.getFillTime() > (now - (Period.DAILY.getInterval()))) {
+                        addToMaxTradeOL(o);
+                    }
+                    lastOrder = o;
+                    if (maxTicket < getOrderTicket(o)) {
+                        maxTicket = getOrderTicket(o);
+                    }
                 }
             }
-        } catch (JFException e) {
-            log(e);
+            for (IOrder o : orderList) {
+                if (o.getFillTime() > (now - (Period.DAILY.getInterval()))) {
+                    addToMaxTradeOL(o);
+                }
+            }
+        } catch (JFException ex) {
+            log.error(ex);
         }
+        setMartingaleDetails(lastOrder);
+    }
+
+    public void setMartingaleDetails(IOrder o) {
+        if (null != o) {
+            String comment = o.getComment();
+            try {
+                consecutiveLosses = Integer.parseInt(comment.split(";")[0]);
+                activatedSL = Double.parseDouble(comment.split(";")[1]);
+                activatedTP = Double.parseDouble(comment.split(";")[2]);
+                closedSLTPLots = Double.parseDouble(comment.split(";")[3]);
+            } catch (Exception e) {
+                log.error(e);
+                consecutiveLosses = 0;
+                activatedSL = 0;
+                activatedTP = 0;
+                closedSLTPLots = 0;
+            }
+
+            if (o.getProfitLossInUSD() > 0) {
+                consecutiveLosses = 0;
+            } else {
+                consecutiveLosses++;
+            }
+        } else {
+            consecutiveLosses = 0;
+            activatedSL = 0;
+            activatedTP = 0;
+            closedSLTPLots = 0;
+        }
+        log.debug("maxTicket: " + maxTicket);
+        log.debug("consecutiveLosses :" + consecutiveLosses);
+        log.debug("activatedSL :" + activatedSL);
+        log.debug("activatedTP :" + activatedTP);
+        log.debug("closedSLTPLots :" + closedSLTPLots);
     }
 
     /**
-     *
-     * @return return this strategy live orders from Dukas server.
+     * set allPositionAmount, maxTicket and orderList var of this bridge live
+     * orders from Dukas srvPipe, ordered by fill time
      */
-    private List<IOrder> getPositions() {
-        List<IOrder> orderList = new ArrayList<IOrder>();
+    private void getPositions() {
+        allPositionAmount = 0;
+        List<IOrder> ol = new ArrayList<IOrder>();
         try {
             for (IOrder order : engine.getOrders()) {
                 if (checkLabel(order) && order.getState() == IOrder.State.FILLED) {
-                    orderList.add(order);
+                    ol.add(order);
+                    log.debug("order by this strategy: " + order);
+                    allPositionAmount += (order.getAmount() * 10);
+                    if (maxTicket < getOrderTicket(order)) {
+                        maxTicket = getOrderTicket(order);
+                    }
                 }
             }
-        } catch (JFException e) {
-            log(e);
-        }
-        return orderList;
-    }
+            sortOrderListByFillTime(ol);
 
-    /**
-     *
-     * @return returns first opened position by this strategy
-     */
-    private IOrder getFirstPosition() {
-        IOrder firstOrder = null;
-        int minTicket = maxTicket;
-        try {
-            for (IOrder o : getPositions()) {
-                if (minTicket >= getOrderTicket(o)) {
-                    firstOrder = o;
-                    minTicket = getOrderTicket(o);
-                }
-            }
-        } catch (Exception e) {
+        } catch (JFException e) {
+            log.error(e);
         }
-        return firstOrder;
+        if (!ol.isEmpty()) {
+            position = ol.get(ol.size() - 1);
+        } else {
+            position = null;
+        }
+        this.orderList = ol;
     }
 
     /**
@@ -1095,29 +1244,7 @@ public class JForexFstBridge implements IStrategy {
      * @return emulated orderTicket
      */
     private int getOrderTicket(IOrder o) {
-        // log("getOrderTicket: "+Integer.parseInt(o.getLabel().split("_")[1])
-        // );
         return Integer.parseInt(o.getLabel().split("_")[1]);
-    }
-
-    /**
-     *
-     * @return last opened position by this strategy
-     */
-    private IOrder getLastPosition() {
-        IOrder rtnOrder = null;
-        for (IOrder order : getPositions()) {
-            if (getOrderTicket(order) >= maxTicket) {
-                rtnOrder = order;
-            }
-        }
-        if (null != rtnOrder) {
-            maxTicket = getOrderTicket(rtnOrder);
-        } else {
-            getHistory();
-            position = null;
-        }
-        return rtnOrder;
     }
 
     /**
@@ -1135,7 +1262,7 @@ public class JForexFstBridge implements IStrategy {
      */
     private double getPositionProfit() {
         double posProfit = 0;
-        for (IOrder order : getPositions()) {
+        for (IOrder order : orderList) {
             posProfit += order.getProfitLossInAccountCurrency();
         }
         return posProfit;
@@ -1147,82 +1274,59 @@ public class JForexFstBridge implements IStrategy {
      */
     private String getPositionDetails() {
         String rtnString = "";
-        position = getLastPosition();
-
-        if (null != position) {
+        if (!orderList.isEmpty()) {
             rtnString += "" + maxTicket; // apositionTicket
             rtnString += " " + (position.isLong() ? 0 : 1); // string
             // apositionType
             // 0BUY 1SELL
-            rtnString += " " + (getPositionAmount() * 10);
+            rtnString += " " + (allPositionAmount);
             rtnString += " " + position.getOpenPrice();
             rtnString += " " + (int) (position.getFillTime() / 1000);
             rtnString += " " + position.getStopLossPrice();
             rtnString += " " + position.getTakeProfitPrice();
             rtnString += " " + ((double) Math.round(getPositionProfit() * 100) / 100);
-            rtnString += " ID=" + connId + ",_MAGIC=" + magic + serverThis.getMartingaleDetails();
+            rtnString += " ID=" + connId + ",_MAGIC=" + magic + getMartingaleDetails();
         } else {
-            rtnString = "0 -1 0.00 0.00000 1577836800 0.00000 0.00000 0.00 " + serverThis.getMartingaleDetails();
+            rtnString = "0 -1 0.00 0.00000 1577836800 0.00000 0.00000 0.00 " + getMartingaleDetails();
         }
         return rtnString;
     }
 
     /**
+     * return proper format of martingale details to FST
      *
-     * @return summary position amount
+     * @return
      */
-    private double getPositionAmount() {
-        double posAmount = 0;
-        for (IOrder order : getPositions()) {
-            posAmount += order.getAmount();
-        }
-        return posAmount;
+    public String getMartingaleDetails() {
+        DecimalFormat df = new DecimalFormat("0.00000");
+        return " cl=" + consecutiveLosses + ";aSL=" + df.format(activatedSL).replace(',', '.') + ";aTP=" + df.format(activatedTP).replace(',', '.') + ";al="
+                + df.format(closedSLTPLots).replace(',', '.');
     }
 
-    /**
-     *
-     * @param order
-     * @return next position in opened ordering
-     */
-    private IOrder getNextPosition(IOrder order) {
-        int ticket = getOrderTicket(order);
-        List<IOrder> orderList = getPositions();
-        for (int i = 0; i < orderList.size(); i++) {
-            ticket++;
-            for (IOrder o : orderList) {
-                if (getOrderTicket(o) == ticket) {
-                    return o;
+    private void getCurrentBar() {
+        try {
+            List<IBar> bars = null;
+            long to = history.getBarStart(period, history.getTimeOfLastTick(instrument));
+            long from = to - (period.getInterval() * 13);
+            log.debug("time from: " + new Date(from));
+            log.debug("time to :" + new Date(to));
+            for (int i = 0; i < 20 && null == bars; i++) {
+                bars = history.getBars(instrument, period, OfferSide.BID, Filter.ALL_FLATS, from, to);
+                if (null != bars && bars.size() > 12) {
+                    continue;
                 }
+                from -= period.getInterval() * 10;
+                if (null == bars) {
+                    log.info("waiting for bars loading...");
+                    log.debug(bars + "");
+                    Thread.sleep(1000);
+                }
+                bars = null;
             }
-        }
-        return null;
-    }
-
-    private void log(String message) {
-        if (log) {
-            console.getOut().println(message);
-            try {
-                FileWriter fstream = new FileWriter(fileName, true);
-                BufferedWriter out = new BufferedWriter(fstream);
-                out.append(message + "\n");
-                out.close();
-            } catch (Exception ex) {
-                console.getOut().print("File access error: " + ex.getMessage());
-            }
-        }
-    }
-
-    private void log(Exception e) {
-        if (log) {
-            e.printStackTrace(console.getErr());
-            try {
-                FileWriter fstream = new FileWriter(fileName, true);
-                BufferedWriter out = new BufferedWriter(fstream);
-                out.append(e + "\n");
-                out.close();
-            } catch (Exception ex) {
-                console.getOut().print("File access error: " + ex.getMessage());
-            }
+            presentBar = bars.get(bars.size() - 1);
+            last10BarTime = bars.get(bars.size() - 11).getTime() / 1000;
+        } catch (Exception ex) {
+            log.error(ex);
         }
     }
 }

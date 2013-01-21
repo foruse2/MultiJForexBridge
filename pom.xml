@@ -2,9 +2,9 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <groupId>com.ttorhcs</groupId>
+    <groupId>org.ttorhcs</groupId>
     <artifactId>MultiJForexBridge</artifactId>
-    <version>1.0-SNAPSHOT</version>
+    <version>1.0</version>
     <packaging>jar</packaging>
 
     <name>MultiJForexBridge</name>
@@ -20,6 +20,11 @@
             <name>Dukascopy public repository</name>
             <url>http://www.dukascopy.com/client/jforexlib/publicrepo/</url>
         </repository>
+        <repository>
+            <id>unknown-jars-temp-repo</id>
+            <name>A temporary repository created by NetBeans for libraries and jars it could not identify. Please replace the dependencies in this repository with correct ones and delete this repository.</name>
+            <url>file:${project.basedir}/lib</url>
+        </repository>
     </repositories>
 
     <dependencies>
@@ -33,7 +38,7 @@
             <groupId>com.dukascopy.dds2</groupId>
             <artifactId>DDS2-jClient-JForex</artifactId>
             <!-- find the latest available version here: 
-                                                        				http://publicrepo.site.dukascopy.com/jforexlib/publicrepo/com/dukascopy/dds2/DDS2-jClient-JForex/ 
+                                                                                        				http://publicrepo.site.dukascopy.com/jforexlib/publicrepo/com/dukascopy/dds2/DDS2-jClient-JForex/ 
          			-->
             <version>2.22.1</version>
             <exclusions>
@@ -66,5 +71,54 @@
             <version>3.3.0</version>
             <classifier>platform</classifier>
         </dependency>
+        <dependency>
+            <groupId>org.apache.poi</groupId>
+            <artifactId>poi</artifactId>
+            <version>3.9</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.poi</groupId>	     
+            <artifactId>poi-ooxml</artifactId>
+            <version>3.9</version>
+        </dependency>
     </dependencies>
+    <build>
+        <sourceDirectory>src</sourceDirectory>
+        <resources>
+            <resource>
+                <directory>rc</directory>
+            </resource>
+        </resources>
+        <plugins>
+            <plugin>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <inherited>true</inherited>
+                <configuration>
+                    <source>1.6</source>
+                    <target>1.6</target>
+                    <fork>true</fork>
+                    <encoding>UTF-8</encoding>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+    <profiles>
+        <profile>
+            <id>for_jForex</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <artifactId>maven-jar-plugin</artifactId>
+                        <configuration>
+                            <classifier>for-jForex</classifier>
+                            <excludes>
+                                <exclude>**/Main*</exclude>
+                                <exclude>**/MultiJForexBridge*</exclude>
+                            </excludes>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 </project>

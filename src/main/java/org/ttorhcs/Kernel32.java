@@ -1,4 +1,4 @@
-package com.ttorhcs.multijforexbridge;
+package org.ttorhcs;
 
 import com.sun.jna.Native;
 import com.sun.jna.Pointer;
@@ -8,6 +8,10 @@ import com.sun.jna.ptr.IntByReference;
 import com.sun.jna.win32.W32APIOptions;
 import java.nio.Buffer;
 
+/*
+ * native connection to win32 API
+ * 
+ */
 public interface Kernel32 extends WinNT {
 
     Kernel32 INSTANCE = (Kernel32) Native.loadLibrary("kernel32", Kernel32.class,

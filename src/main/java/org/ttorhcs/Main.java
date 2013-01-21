@@ -27,18 +27,17 @@
  * OF LIABILITY, ARISING OUT OF THE USE OF OR INABILITY TO USE THIS SOFTWARE, 
  * EVEN IF DUKASCOPY HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
  */
-package com.ttorhcs.multijforexbridge;
+package org.ttorhcs;
 
-import com.dukascopy.api.system.ISystemListener;
-import com.dukascopy.api.system.IClient;
-import com.dukascopy.api.system.ClientFactory;
 import com.dukascopy.api.Instrument;
-
+import com.dukascopy.api.system.ClientFactory;
+import com.dukascopy.api.system.IClient;
+import com.dukascopy.api.system.ISystemListener;
 import java.util.HashSet;
 import java.util.Set;
-
-import org.slf4j.LoggerFactory;
+import multiJForexBridge.MultiJForexBridge;
 import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * This small program demonstrates how to initialize Dukascopy client and start a strategy
@@ -49,9 +48,9 @@ public class Main {
     //url of the DEMO jnlp
     private static String jnlpUrl = "https://www.dukascopy.com/client/demo/jclient/jforex.jnlp";
     //user name
-    private static String userName = "DEMO2qaUPu";
+    private static String userName = "DEMO2vhJUd";
     //password
-    private static String password = "qaUPu";
+    private static String password = "vhJUd";
 
     public static void main(String[] args) throws Exception {
         //get the instance of the IClient interface
@@ -123,7 +122,7 @@ public class Main {
         client.setSubscribedInstruments(instruments);
         
         //workaround for LoadNumberOfCandlesAction for JForex-API versions > 2.6.64
-        Thread.sleep(5000);
+        Thread.sleep(1000);
         
         //start the strategy
         LOGGER.info("Starting strategy");
