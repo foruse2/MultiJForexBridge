@@ -4,7 +4,6 @@
  */
 package org.ttorhcs;
 
-import org.ttorhcs.BridgeThread;
 import com.dukascopy.api.JFException;
 import com.dukascopy.api.Period;
 import java.awt.Container;
@@ -16,7 +15,6 @@ import javax.swing.JScrollPane;
 import javax.swing.event.TableModelEvent;
 import javax.swing.table.DefaultTableCellRenderer;
 import multiJForexBridge.MultiJForexBridge;
-
 import org.ttorhcs.logging.Logger;
 
 /**
@@ -54,6 +52,7 @@ public class MainGui extends javax.swing.JPanel {
         return this;
     }
 
+
     private void setUpColumns() {
         for (int i = 0; i < multiBridge.table.getColumnCount(); i++) {
             if (multiBridge.table.getColumnClass(i).isEnum()) {
@@ -76,7 +75,7 @@ public class MainGui extends javax.swing.JPanel {
                 renderer.setToolTipText("Click to choose a Period");
                 multiBridge.table.getColumnModel().getColumn(i).setCellRenderer(renderer);
                 continue;
-            }    
+            }
         }
 
     }
@@ -228,11 +227,11 @@ public class MainGui extends javax.swing.JPanel {
                         .addComponent(startButton)
                         .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                         .addComponent(stopButton)
-                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED, 72, Short.MAX_VALUE)
+                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED, 78, Short.MAX_VALUE)
                         .addComponent(addButton)
                         .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                         .addComponent(removeButton)
-                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED, 76, Short.MAX_VALUE)
+                        .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED, 82, Short.MAX_VALUE)
                         .addComponent(startAllButton)
                         .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                         .addComponent(stopAllButton))
@@ -318,6 +317,7 @@ public class MainGui extends javax.swing.JPanel {
         }
         multiBridge.addToList(bridge);
         multiBridge.tableModel.fireTableChanged(new TableModelEvent(multiBridge.tableModel));
+        multiBridge.saveConfig();
     }//GEN-LAST:event_addButtonActionPerformed
 
     private void removeButtonActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_removeButtonActionPerformed
@@ -406,6 +406,7 @@ public class MainGui extends javax.swing.JPanel {
 
         multiBridge.saveConfig();
     }//GEN-LAST:event_settingsSetButtonActionPerformed
+
     // Variables declaration - do not modify//GEN-BEGIN:variables
     private javax.swing.JButton addButton;
     private javax.swing.JCheckBox eqLogCheckBox;
