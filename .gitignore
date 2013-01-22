@@ -2,3 +2,4 @@ target/*
 logs/*
 release/Strategies/MultiJForexBridge.java
 release/Strategies/Files/JForexBridge.jar
+/nbactions.xml
