@@ -49,6 +49,7 @@ public class MultiJForexBridge implements IStrategy {
     private boolean eqStopActivated;
     public Logger log;
     private XlsEquityLogger equityLogger = null;
+    private IDataService dataService;
 
     @Override
     public void onStart(final IContext context) throws JFException {
@@ -56,6 +57,7 @@ public class MultiJForexBridge implements IStrategy {
         this.context = context;
         this.console = context.getConsole();
         this.userInterface = context.getUserInterface();
+        this.dataService = context.getDataService();
 
         List<Boolean> startedList = new ArrayList<Boolean>();
         brigdesFile = new File(getPath("config") + "\\bridges.xml");
@@ -70,9 +72,8 @@ public class MultiJForexBridge implements IStrategy {
             strategiesList.add(new BridgeThread(new JForexFstBridge(), Instrument.EURUSD));
             startedList.add(false);
         }
-        saveConfig();
-        createEQLogger();
 
+        createEQLogger();
         tableModel = new Table(strategiesList, console);
         table = new JTable(tableModel);
         table.setPreferredScrollableViewportSize(new Dimension(600, 70));
@@ -123,6 +124,8 @@ public class MultiJForexBridge implements IStrategy {
             }
             onStartStarted = true;
         }
+        tableModel.fireTableChanged(new TableModelEvent(tableModel));
+        saveConfig();
 
 
 
@@ -248,6 +251,9 @@ public class MultiJForexBridge implements IStrategy {
             if (!onStartStarted) {
                 return;
             }
+            if (dataService.isOfflineTime(tick.getTime())) {
+                return;
+            }
             for (BridgeThread st : strategiesList) {
                 st.tickSended = false;
             }
@@ -264,7 +270,7 @@ public class MultiJForexBridge implements IStrategy {
             int tryes = 0;
             while (!alldone) {
                 if (!alldone) {
-                    Thread.sleep(20);
+                    Thread.sleep(12);
                 }
                 alldone = true;
                 for (BridgeThread st : strategiesList) {
@@ -273,14 +279,14 @@ public class MultiJForexBridge implements IStrategy {
                     }
                 }
                 tryes++;
-                if (tryes > 9) {
+                if (tryes > 19) {
                     alldone = true;
                 }
             }
+            modifyAllowed = true;
             Thread.sleep(3);
         } catch (InterruptedException ex) {
         }
-        modifyAllowed = true;
 
     }
 
@@ -319,12 +325,11 @@ public class MultiJForexBridge implements IStrategy {
         if (message.getType() == IMessage.Type.ORDER_CLOSE_OK) {
             IOrder closedOrder = message.getOrder();
             for (BridgeThread st : strategiesList) {
-                try{
-                if ((Integer.parseInt(closedOrder.getLabel().replace("S", "").split("_")[0]) == st.bridge.magic)) {
-                    equityLogger.logTrade(closedOrder);
-                }
-                }catch(Exception e){
-                    
+                try {
+                    if ((Integer.parseInt(closedOrder.getLabel().replace("S", "").split("_")[0]) == st.bridge.magic)) {
+                        equityLogger.logTrade(closedOrder);
+                    }
+                } catch (Exception e) {
                 }
             }
         }
@@ -352,6 +357,9 @@ public class MultiJForexBridge implements IStrategy {
         saveConfig();
         Collection<BridgeThread> collectionToRemove = new ArrayList<BridgeThread>();
         for (BridgeThread st : strategiesList) {
+            if (st.bridge.started) {
+                st.bridge.onStop();
+            }
             collectionToRemove.add(st);
         }
         removeFromList(collectionToRemove);
