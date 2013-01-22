@@ -40,6 +40,8 @@ public class XlsEquityLogger {
     private Sheet EQSheet;
     private Sheet AllTradeSheet;
     private int sumTradeRow = 3;
+    private CellStyle cs;
+    private Calendar cal = Calendar.getInstance(TimeZone.getTimeZone("UTC"));
 
     public XlsEquityLogger(IContext context, String fileName, Logger log, boolean logAllowed) {
 
@@ -47,42 +49,31 @@ public class XlsEquityLogger {
         this.log = log;
         if (logAllowed) {
             String folder = getPath(fileName);
-            new LogMaintain(folder, Period.WEEKLY);
+            new LogMaintain(folder, Period.MONTHLY);
             provideXLS(folder);
             writeHeader();
         }
     }
 
-    public void logEQBAL( long time, double equity, double balance) {
+    public void logEQBAL(long time, double equity, double balance) {
         if (!logAllowed) {
             return;
         }
         try {
-            Sheet sheet;
-            if (XLS != null) {
-                sheet = XLS.getSheet("Equity");
-            } else {
-                XLS = WorkbookFactory.create(new File(fileName));
-                sheet = XLS.getSheet("Equity");
-            }
+            Sheet sheet = XLS.getSheet("Equity");
             Cell cellDate, cellEQ, cellBal;
-
             Row r = sheet.getRow(row);
             if (null == r) {
                 r = sheet.createRow(row);
             }
             row++;
 
-            Calendar cal = Calendar.getInstance(TimeZone.getTimeZone("UTC"));
+
             cellDate = getOrCreateCell(r, 0);
             cellEQ = getOrCreateCell(r, 1);
             cellBal = getOrCreateCell(r, 2);
 
-
             //openDate
-            CellStyle cs = XLS.createCellStyle();
-            DataFormat df = XLS.createDataFormat();
-            cs.setDataFormat(df.getFormat("m/d/yy h:mm"));
             cellDate.setCellStyle(cs);
             cal.setTimeInMillis(time);
             cellDate.setCellValue(cal);
@@ -100,12 +91,11 @@ public class XlsEquityLogger {
             log.error(ex);
         }
     }
-    
-       public void logTrade(IOrder o) {
+
+    public void logTrade(IOrder o) {
         if (!logAllowed) {
             return;
         }
-
         try {
             Cell cellOT, cellCT, cellAmount, cellPL, cellSIDE, cellMagic;
             String side = (o.isLong() ? "LONG" : "SHORT");
@@ -121,7 +111,7 @@ public class XlsEquityLogger {
             long closeTime = o.getCloseTime();
             double amount = o.getAmount() * 10;
             double pl = o.getProfitLossInPips();
-            Calendar cal = Calendar.getInstance(TimeZone.getTimeZone("UTC"));
+
             cellOT = getOrCreateCell(r, 0);
             cellSIDE = getOrCreateCell(r, 1);
             cellAmount = getOrCreateCell(r, 2);
@@ -131,9 +121,6 @@ public class XlsEquityLogger {
 
 
             //openDate
-            CellStyle cs = XLS.createCellStyle();
-            DataFormat df = XLS.createDataFormat();
-            cs.setDataFormat(df.getFormat("m/d/yy h:mm"));
             cellOT.setCellStyle(cs);
             cal.setTimeInMillis(openTime);
             cellOT.setCellValue(cal);
@@ -166,20 +153,20 @@ public class XlsEquityLogger {
         }
         // eq log column names
         writeCell(EQSheet, 2, 0, "Date");
-        writeCell(EQSheet,2, 1, "Equity");
-        writeCell(EQSheet,2, 2, "Balance");
-        
+        writeCell(EQSheet, 2, 1, "Equity");
+        writeCell(EQSheet, 2, 2, "Balance");
+
         writeCell(AllTradeSheet, 2, 0, "OpenDate");
-        writeCell(AllTradeSheet,2, 1, "Direction");
-        writeCell(AllTradeSheet,2, 2, "Amount");
-        writeCell(AllTradeSheet,2, 3, "CloseDate");
-        writeCell(AllTradeSheet,2, 4, "PL pips");
-        writeCell(AllTradeSheet,2, 5, "Magic");
+        writeCell(AllTradeSheet, 2, 1, "Direction");
+        writeCell(AllTradeSheet, 2, 2, "Amount");
+        writeCell(AllTradeSheet, 2, 3, "CloseDate");
+        writeCell(AllTradeSheet, 2, 4, "PL pips");
+        writeCell(AllTradeSheet, 2, 5, "Magic");
     }
 
     private void provideXLS(String folder) {
         fileName = folder + "\\EQBAL_" + System.currentTimeMillis() + ".xls";
-        File blankCopy = null;
+        File blankCopy;
         try {
             FileOutputStream out = new FileOutputStream(fileName);
             Workbook wb = new HSSFWorkbook();
@@ -189,6 +176,9 @@ public class XlsEquityLogger {
 
             InputStream inp = new FileInputStream(blankCopy);
             XLS = WorkbookFactory.create(inp);
+            cs = XLS.createCellStyle();
+            DataFormat df = XLS.createDataFormat();
+            cs.setDataFormat(df.getFormat("m/d/yy h:mm"));
             AllTradeSheet = XLS.createSheet("All_Trade");
             EQSheet = XLS.createSheet("Equity");
             fileOut = new RandomAccessFile(fileName, "rw");

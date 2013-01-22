@@ -40,6 +40,8 @@ public class XlsTradeLogger {
     public int numberOfTicks = 0;
     public long startTime = 0, endTime = 0;
     private final boolean logAllowed;
+    private CellStyle cs;
+    private Calendar cal = Calendar.getInstance(TimeZone.getTimeZone("UTC"));
 
     public XlsTradeLogger(int magic, int connId, String folder, Logger log, boolean tradelogAllowed) {
 
@@ -51,7 +53,7 @@ public class XlsTradeLogger {
             headerSetted = true;
             return;
         }
-        new LogMaintain(this.folder, Period.WEEKLY);
+        new LogMaintain(this.folder, Period.MONTHLY);
         provideXLS(this.folder);
 
     }
@@ -100,7 +102,6 @@ public class XlsTradeLogger {
             long closeTime = o.getCloseTime();
             double amount = o.getAmount() * 10;
             double pl = o.getProfitLossInPips();
-            Calendar cal = Calendar.getInstance(TimeZone.getTimeZone("UTC"));
             cellOT = getOrCreateCell(r, 0);
             cellSIDE = getOrCreateCell(r, 1);
             cellAmount = getOrCreateCell(r, 2);
@@ -109,9 +110,6 @@ public class XlsTradeLogger {
 
 
             //openDate
-            CellStyle cs = XLS.createCellStyle();
-            DataFormat df = XLS.createDataFormat();
-            cs.setDataFormat(df.getFormat("m/d/yy h:mm"));
             cellOT.setCellStyle(cs);
             cal.setTimeInMillis(openTime);
             cellOT.setCellValue(cal);
@@ -150,6 +148,9 @@ public class XlsTradeLogger {
 
             InputStream inp = new FileInputStream(blankCopy);
             XLS = WorkbookFactory.create(inp);
+            cs = XLS.createCellStyle();
+            DataFormat df = XLS.createDataFormat();
+            cs.setDataFormat(df.getFormat("m/d/yy h:mm"));
             fileOut = new RandomAccessFile(fileName, "rw");
         } catch (Exception ex) {
             log.error(ex);
