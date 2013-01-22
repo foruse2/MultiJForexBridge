@@ -33,7 +33,7 @@ public class Logger {
                 FileWriter fstream;
                 String path = getPath(logFileDir);
                 new LogMaintain(path, Period.DAILY);
-                String logFile = getPath(path) + "\\"+identity+".log";
+                String logFile = getPath(path) + "\\" + identity + ".log";
                 fstream = new FileWriter(logFile, false);
                 out = new BufferedWriter(fstream);
             }
@@ -47,6 +47,18 @@ public class Logger {
             console.getOut().println(connId + " D:" + message);
             try {
                 out.append("D: " + message + "\n");
+                out.flush();
+            } catch (Exception ex) {
+                console.getOut().println("File access error: " + ex.getMessage());
+            }
+        }
+    }
+
+    public synchronized void debug(Exception e) {
+        if (logLevel.getCode() > 2) {
+            e.printStackTrace(console.getOut());
+            try {
+                out.append("D: " + e + "\n");
                 out.flush();
             } catch (Exception ex) {
                 console.getOut().println("File access error: " + ex.getMessage());
